@@ -38,7 +38,7 @@
 <script>
 // --- CONFIGURATION ABLY (AIRDROP) ---
 // Mets ta clé ici entre les guillemets
-const ABLY_KEY = 'p6Jeog.xGA7EQ:O3NQhp3DkleV-JnxyieyStCUaug2pIB-EpIl6W9OXlc'; 
+const ABLY_KEY = 'p6Jeog.4vLjOw:GpkK-K-GrS4HVCsPL0Pfk2hfVwwvHMEpF9Sddrt1v_4'; 
 
 let channel;
 const ably = new Ably.Realtime({ key: ABLY_KEY });
