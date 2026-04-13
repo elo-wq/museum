@@ -2,193 +2,369 @@
 <html lang="fr">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Galerie 3D Permanente</title>
+    <title>Galerie 3D Pro - Interface Commutable</title>
     <style>
-        body { margin:0; overflow:hidden; background:#111; font-family:sans-serif; touch-action: none; }
-        #ui { 
-            position:absolute; top:10px; left:10px; right:10px;
-            background:rgba(255,255,255,0.9); padding:12px; 
-            border-radius:10px; z-index: 10; font-size: 14px;
+        body { margin: 0; overflow: hidden; background: #eeeeee; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        
+        /* Nouveau style pour l'effet visuel de Drag & Drop */
+        body.drag-over::after {
+            content: "LÂCHEZ L'IMAGE ICI";
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0, 123, 255, 0.2);
+            border: 4px dashed #007bff;
+            display: flex; align-items: center; justify-content: center;
+            color: #007bff; font-weight: bold; font-size: 24px;
+            z-index: 100; pointer-events: none;
         }
-        #status { font-size: 11px; color: #d63031; margin-top: 5px; font-weight: bold; }
-        #joystick-container {
-            position: absolute; bottom: 40px; left: 40px;
-            width: 80px; height: 80px; background: rgba(255,255,255,0.2);
-            border-radius: 50%; z-index: 20; display: none;
-        }
-        #joystick-stick {
+
+        #ui {
             position: absolute; top: 20px; left: 20px;
-            width: 40px; height: 40px; background: rgba(255,255,255,0.5);
-            border-radius: 50%;
+            background: rgba(255, 255, 255, 0.95); border-radius: 12px;
+            padding: 20px; font-size: 14px; z-index: 10;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.15); border: 1px solid #ddd;
+            width: 250px;
+            display: none;
+        }
+        #hint {
+            position: absolute; bottom: 20px; left: 20px;
+            background: rgba(0, 0, 0, 0.6); color: white;
+            padding: 8px 15px; border-radius: 8px; font-size: 12px;
+            pointer-events: none; z-index: 5;
+        }
+        #crosshair {
+            position: absolute; top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            width: 10px; height: 10px;
+            border: 2px solid white; border-radius: 50%;
+            pointer-events: none; mix-blend-mode: difference;
+        }
+        kbd { background: #eee; border-radius: 3px; padding: 2px 4px; border: 1px solid #ccc; font-weight: bold; color: #333; }
+        .selected-info { color: #007bff; font-weight: bold; margin-top: 10px; display: none; }
+        .btn-group { margin-top: 15px; display: flex; gap: 5px; flex-direction: column; }
+        button { 
+            padding: 8px; cursor: pointer; border-radius: 5px; border: 1px solid #ccc; 
+            background: white; transition: 0.2s; font-size: 12px;
+        }
+        button:hover { background: #f0f0f0; border-color: #999; }
+        #saveIndicator {
+            position: absolute; bottom: 20px; right: 20px;
+            background: rgba(46, 204, 113, 0.9); color: white;
+            padding: 8px 16px; border-radius: 30px; font-size: 12px;
+            display: none; z-index: 10;
         }
     </style>
 </head>
 <body>
 
+<div id="hint">Appuyez sur <kbd>0</kbd> pour voir les contrôles</div>
+
 <div id="ui">
-    <input type="file" id="upload" multiple accept="image/*">
-    <div id="count">Chargement des images partagées...</div>
-    <div id="status">🔴 Connexion au cloud...</div>
+    <strong>🎮 Contrôles :</strong><br>
+    <kbd>Z</kbd><kbd>Q</kbd><kbd>S</kbd><kbd>D</kbd> : Marcher<br>
+    <kbd>E</kbd> : Poser un mur | <kbd>D</kbd> : Poser une image au sol<br>
+    <kbd>X</kbd> : Supprimer<br>
+    <kbd>0</kbd> : Masquer ce menu<br>
+    <hr>
+    <strong>✏️ Édition (Sélection) :</strong><br>
+    <kbd>↑</kbd><kbd>↓</kbd> : Hauteur<br>
+    <kbd>←</kbd><kbd>→</kbd> : Gauche / Droite<br>
+    <div id="status" class="selected-info">● Mur sélectionné</div>
+    <hr>
+    <strong>💾 Fichiers :</strong>
+    <div class="btn-group">
+        <button onclick="exportToJson()">📥 Télécharger (.json)</button>
+        <button onclick="importFromJson()">📤 Charger un fichier</button>
+        <button onclick="clearScene()" style="color: #d32f2f;">🗑️ Tout effacer</button>
+    </div>
 </div>
 
-<div id="joystick-container"><div id="joystick-stick"></div></div>
+<div id="crosshair"></div>
+<div id="saveIndicator">Sauvegarde effectuée ✓</div>
 
-<script src="https://cdn.ably.com/lib/ably.min-1.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.158.0/build/three.min.js"></script>
 
 <script>
-// --- CONFIG ABLY ---
-const ABLY_KEY = 'p6Jeog.4vLjOw:GpkK-K-GrS4HVCsPL0Pfk2hfVwwvHMEpF9Sddrt1v_4'; 
-const ably = new Ably.Realtime({ key: ABLY_KEY });
-const channel = ably.channels.get('galerie-live');
+let isLocked = false;
+let artworks = [];
+let selectedWall = null;
+let placingImage = null;
+let uiVisible = false;
+const keys = { z: false, q: false, s: false, d: false, ArrowUp: false, ArrowDown: false, ArrowLeft: false, ArrowRight: false };
 
-// --- SETUP THREE.JS ---
-let scene = new THREE.Scene();
-scene.background = new THREE.Color(0x111111); // Fond sombre pour faire ressortir les photos
-let camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
-camera.position.set(0, 2, 10);
+// --- SCÈNE ---
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xf0f0f0);
 
-let renderer = new THREE.WebGLRenderer({ antialias: true });
+const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+camera.position.set(0, 1.6, 5);
+camera.rotation.order = "YXZ";
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(window.devicePixelRatio);
 document.body.appendChild(renderer.domElement);
 
-scene.add(new THREE.AmbientLight(0xffffff, 1));
-let grid = new THREE.GridHelper(200, 50, 0x444444, 0x222222);
-scene.add(grid);
+scene.add(new THREE.AmbientLight(0xffffff, 0.8));
+const sun = new THREE.DirectionalLight(0xffffff, 0.4);
+sun.position.set(5, 10, 7.5);
+scene.add(sun);
 
-let imagesTextures = [];
-let sphereGroup = null;
+scene.add(new THREE.GridHelper(200, 100, 0xcccccc, 0xdddddd));
+const floor = new THREE.Mesh(new THREE.PlaneGeometry(1000, 1000), new THREE.MeshBasicMaterial({ visible: false }));
+floor.rotation.x = -Math.PI / 2;
+scene.add(floor);
 
-// --- CONNEXION ET HISTORIQUE ---
-ably.connection.on('connected', () => {
-    document.getElementById('status').innerText = "✅ Cloud Synchrone Actif";
-    document.getElementById('status').style.color = "#27ae60";
+const raycaster = new THREE.Raycaster();
+const center = new THREE.Vector2(0, 0);
 
-    // RÉCUPÉRER LES IMAGES DÉJÀ ENVOYÉES PAR LES AUTRES
-    channel.history((err, resultPage) => {
-        if (!err) {
-            // resultPage.items contient les derniers messages envoyés sur ce canal
-            let messages = resultPage.items.reverse(); 
-            messages.forEach(msg => ajouterImage(msg.data));
-            if(messages.length === 0) document.getElementById("count").innerText = "La galerie est vide. Soyez le premier !";
+// --- UI & SAUVEGARDE ---
+function toggleUI() {
+    uiVisible = !uiVisible;
+    document.getElementById('ui').style.display = uiVisible ? 'block' : 'none';
+    document.getElementById('hint').style.display = uiVisible ? 'none' : 'block';
+}
+
+function triggerSaveUI() {
+    const indicator = document.getElementById('saveIndicator');
+    indicator.style.display = 'block';
+    setTimeout(() => indicator.style.display = 'none', 1500);
+}
+
+function saveScene() {
+    const data = artworks.map(mesh => {
+        let imgData = null;
+        if (mesh.material.length) {
+            imgData = mesh.material[4].map?.image?.src || null;
+        } else {
+            imgData = mesh.material.map?.image?.src || null;
         }
+        return { pos: mesh.position, rot: mesh.rotation.y, scale: mesh.scale, image: imgData };
     });
-});
+    localStorage.setItem('gallery_autosave', JSON.stringify(data));
+    triggerSaveUI();
+}
 
-// Écouter les futures images
-channel.subscribe('new-image', msg => ajouterImage(msg.data));
-
-// --- LOGIQUE MOBILE / PC ---
-let moveForward = 0, moveSide = 0;
-let yaw = 0, pitch = 0;
-let isMobile = ('ontouchstart' in window);
-if(isMobile) document.getElementById('joystick-container').style.display = 'block';
-
-// Fonction ajout d'image
-function ajouterImage(src) {
-    new THREE.TextureLoader().load(src, tex => {
-        tex.colorSpace = THREE.SRGBColorSpace;
-        imagesTextures.push(tex);
-        document.getElementById("count").innerText = imagesTextures.length + " images partagées";
-        createSphere();
+function loadScene(jsonString = null) {
+    const saved = jsonString || localStorage.getItem('gallery_autosave');
+    if(!saved) return;
+    artworks.forEach(w => scene.remove(w));
+    artworks = [];
+    const data = JSON.parse(saved);
+    const loader = new THREE.TextureLoader();
+    data.forEach(item => {
+        let geometry, material;
+        if (item.scale.z < 0.3) { // C'est un mur
+            geometry = new THREE.BoxGeometry(3,3,0.2);
+            material = new THREE.MeshLambertMaterial({ color: 0xcccccc });
+            if(item.image) {
+                const tex = loader.load(item.image);
+                tex.colorSpace = THREE.SRGBColorSpace;
+                const mats = Array(6).fill(new THREE.MeshLambertMaterial({ color: 0xcccccc }));
+                mats[4] = new THREE.MeshBasicMaterial({ map: tex });
+                mats[5] = new THREE.MeshBasicMaterial({ map: tex });
+                material = mats;
+            }
+        } else { // C'est une image au sol
+            geometry = new THREE.PlaneGeometry(2,2);
+            material = new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide });
+            if(item.image) {
+                material.map = loader.load(item.image);
+            }
+        }
+        const mesh = new THREE.Mesh(geometry, material);
+        mesh.position.copy(item.pos);
+        mesh.rotation.y = item.rot;
+        if (item.scale.z > 0.3) mesh.rotation.x = -Math.PI/2;
+        scene.add(mesh);
+        artworks.push(mesh);
     });
 }
 
-// Upload
-document.getElementById("upload").onchange = (e) => {
-    Array.from(e.target.files).forEach(file => {
-        let reader = new FileReader();
-        reader.onload = (ev) => {
-            // Note: On n'ajoute pas localement ici car subscribe('new-image') 
-            // nous renverra notre propre message, évitant les doublons.
-            channel.publish('new-image', ev.target.result);
-        };
-        reader.readAsDataURL(file);
-    });
-};
-
-function createSphere() {
-    if (sphereGroup) scene.remove(sphereGroup);
-    sphereGroup = new THREE.Group();
-    sphereGroup.position.set(0, 4, 0);
-    scene.add(sphereGroup);
-
-    const radius = 6, count = imagesTextures.length;
-    imagesTextures.forEach((tex, i) => {
-        const phi = Math.acos(-1 + (2 * i) / count);
-        const theta = Math.sqrt(count * Math.PI) * phi;
-        const x = radius * Math.sin(phi) * Math.cos(theta);
-        const y = radius * Math.sin(phi) * Math.sin(theta);
-        const z = radius * Math.cos(phi);
-        
-        const plane = new THREE.Mesh(
-            new THREE.PlaneGeometry(1.5 * (tex.image.width/tex.image.height), 1.5),
-            new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide })
-        );
-        plane.position.set(x, y, z);
-        plane.lookAt(0, 4, 0); 
-        sphereGroup.add(plane);
-    });
+// --- FICHIERS ---
+function exportToJson() {
+    const data = localStorage.getItem('gallery_autosave');
+    if(!data) return;
+    const blob = new Blob([data], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = "ma_galerie_3d.json"; a.click();
 }
 
-// --- CONTRÔLES TACTILES ---
-let touchX = 0, touchY = 0;
-document.addEventListener('touchstart', e => {
-    touchX = e.touches[0].pageX;
-    touchY = e.touches[0].pageY;
-}, {passive: false});
+function importFromJson() {
+    const input = document.createElement('input');
+    input.type = 'file'; input.accept = '.json';
+    input.onchange = e => {
+        const reader = new FileReader();
+        reader.onload = ev => { loadScene(ev.target.result); saveScene(); };
+        reader.readAsText(e.target.files[0]);
+    };
+    input.click();
+}
 
-document.addEventListener('touchmove', e => {
-    let t = e.touches[0];
-    if(t.pageX > window.innerWidth / 2) {
-        yaw -= (t.pageX - touchX) * 0.005;
-        pitch -= (t.pageY - touchY) * 0.005;
-        pitch = Math.max(-0.8, Math.min(0.8, pitch));
-        camera.rotation.set(pitch, yaw, 0, 'YXZ');
-        touchX = t.pageX; touchY = t.pageY;
+function clearScene() {
+    if(confirm("Tout effacer ?")) {
+        localStorage.removeItem('gallery_autosave');
+        location.reload();
+    }
+}
+
+// --- INTERACTIONS ---
+function selectWall() {
+    raycaster.setFromCamera(center, camera);
+    const intersects = raycaster.intersectObjects(artworks);
+    if(selectedWall) {
+        if(selectedWall.material.emissive) selectedWall.material.emissive.set(0x000000);
+        else if (Array.isArray(selectedWall.material)) {
+            selectedWall.material.forEach(m => { if(m.emissive) m.emissive.set(0x000000); });
+        }
+    }
+    if(intersects.length>0) {
+        selectedWall = intersects[0].object;
+        if(selectedWall.material.emissive) selectedWall.material.emissive.set(0x111133);
+        document.getElementById('status').style.display = 'block';
     } else {
-        let container = document.getElementById('joystick-container').getBoundingClientRect();
-        let dx = t.pageX - (container.left + 40);
-        let dy = t.pageY - (container.top + 40);
-        let dist = Math.min(Math.sqrt(dx*dx + dy*dy), 40);
-        let angle = Math.atan2(dy, dx);
-        document.getElementById('joystick-stick').style.transform = `translate(${Math.cos(angle)*dist}px, ${Math.sin(angle)*dist}px)`;
-        moveForward = -Math.sin(angle) * (dist/40);
-        moveSide = -Math.cos(angle) * (dist/40);
+        selectedWall = null;
+        document.getElementById('status').style.display = 'none';
     }
-}, {passive: false});
+}
 
-document.addEventListener('touchend', () => {
-    moveForward = 0; moveSide = 0;
-    document.getElementById('joystick-stick').style.transform = `translate(0px, 0px)`;
+function placeWall() {
+    raycaster.setFromCamera(center, camera);
+    const hit = raycaster.intersectObject(floor);
+    if(hit.length>0) {
+        const mesh = new THREE.Mesh(new THREE.BoxGeometry(3,3,0.2), new THREE.MeshLambertMaterial({ color: 0xcccccc }));
+        mesh.position.set(hit[0].point.x, 1.5, hit[0].point.z);
+        mesh.rotation.y = camera.rotation.y;
+        scene.add(mesh);
+        artworks.push(mesh);
+    }
+}
+
+function startPlacingImageOnFloor() {
+    raycaster.setFromCamera(center, camera);
+    const hit = raycaster.intersectObject(floor);
+    if(hit.length>0) {
+        const geometry = new THREE.PlaneGeometry(2,2);
+        const material = new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide });
+        const plane = new THREE.Mesh(geometry, material);
+        plane.rotation.x = -Math.PI/2;
+        plane.position.set(hit[0].point.x, 0.01, hit[0].point.z);
+        scene.add(plane);
+        artworks.push(plane);
+        placingImage = plane;
+    }
+}
+
+// --- ÉVÉNEMENTS ---
+document.addEventListener("mousedown", () => { if(!isLocked) document.body.requestPointerLock(); else selectWall(); });
+document.addEventListener("pointerlockchange", () => { isLocked = document.pointerLockElement===document.body; });
+
+document.addEventListener("keydown", e => {
+    if(keys.hasOwnProperty(e.key)) keys[e.key] = true;
+    if(e.key==="0") toggleUI();
+    if(!isLocked) return;
+
+    if(e.key.toLowerCase()==="e") { placeWall(); placingImage=artworks[artworks.length-1]; }
+    if(e.key.toLowerCase()==="d") startPlacingImageOnFloor();
+
+    if(e.key.toLowerCase()==="x" && selectedWall) {
+        scene.remove(selectedWall);
+        artworks = artworks.filter(w=>w!==selectedWall);
+        selectedWall=null;
+        document.getElementById('status').style.display='none';
+        saveScene();
+    }
 });
 
-// PC Mouse
-document.addEventListener("click", () => { if(!isMobile) document.body.requestPointerLock(); });
-document.addEventListener("mousemove", (e) => {
-    if (document.pointerLockElement === document.body) {
-        yaw -= e.movementX * 0.002; pitch -= e.movementY * 0.002;
-        camera.rotation.set(Math.max(-0.8, Math.min(0.8, pitch)), yaw, 0, 'YXZ');
-    }
+document.addEventListener("keyup", e => { if(keys.hasOwnProperty(e.key)) keys[e.key]=false; });
+
+document.addEventListener("mousemove", e => {
+    if(!isLocked) return;
+    camera.rotation.y -= e.movementX*0.002;
+    camera.rotation.x -= e.movementY*0.002;
+    camera.rotation.x = Math.max(-1.5, Math.min(1.5, camera.rotation.x));
 });
 
+// --- AMÉLIORATION DRAG & DROP ---
+document.addEventListener("dragenter", () => document.body.classList.add('drag-over'));
+document.addEventListener("dragleave", (e) => { if(e.clientY <= 0 || e.clientX <= 0) document.body.classList.remove('drag-over'); });
+document.addEventListener("dragover", e => e.preventDefault());
+
+document.addEventListener("drop", e => {
+    e.preventDefault();
+    document.body.classList.remove('drag-over');
+    
+    const file = e.dataTransfer.files[0];
+    if(!file || !file.type.startsWith('image/')) return;
+
+    const reader = new FileReader();
+    reader.onload = ev => {
+        const texLoader = new THREE.TextureLoader();
+        texLoader.load(ev.target.result, tex => {
+            tex.colorSpace = THREE.SRGBColorSpace;
+
+            // Détection de l'objet sous la souris au moment du drop
+            const mouse = new THREE.Vector2(
+                (e.clientX / window.innerWidth) * 2 - 1,
+                -(e.clientY / window.innerHeight) * 2 + 1
+            );
+            raycaster.setFromCamera(mouse, camera);
+            const intersects = raycaster.intersectObjects(artworks);
+            
+            let target = intersects.length > 0 ? intersects[0].object : (placingImage || selectedWall);
+
+            if(target) {
+                if (target.geometry.type === "PlaneGeometry") {
+                    target.material.map = tex;
+                } else {
+                    const mats = Array(6).fill(new THREE.MeshLambertMaterial({ color: 0xcccccc }));
+                    mats[4] = new THREE.MeshBasicMaterial({ map: tex });
+                    mats[5] = new THREE.MeshBasicMaterial({ map: tex });
+                    target.material = mats;
+                }
+                target.material.needsUpdate = true;
+                saveScene();
+                placingImage = null;
+            }
+        });
+    };
+    reader.readAsDataURL(file);
+});
+
+// --- ANIMATION ---
 function animate() {
     requestAnimationFrame(animate);
-    if (sphereGroup) sphereGroup.rotation.y += 0.001;
-    let speed = 0.15;
-    let dir = new THREE.Vector3();
-    camera.getWorldDirection(dir);
-    dir.y = 0; dir.normalize();
-    let side = new THREE.Vector3().crossVectors(camera.up, dir).normalize();
-    if (moveForward !== 0) camera.position.addScaledVector(dir, moveForward * speed);
-    if (moveSide !== 0) camera.position.addScaledVector(side, moveSide * speed);
+    if(isLocked) {
+        const speed=0.12;
+        const dir=new THREE.Vector3();
+        camera.getWorldDirection(dir);
+        dir.y=0; dir.normalize();
+        const side=new THREE.Vector3().crossVectors(camera.up, dir).normalize();
+
+        if(keys.z) camera.position.addScaledVector(dir, speed);
+        if(keys.s) camera.position.addScaledVector(dir, -speed);
+        if(keys.q) camera.position.addScaledVector(side, speed);
+        if(keys.d) camera.position.addScaledVector(side, -speed);
+
+        if(selectedWall && (keys.ArrowUp||keys.ArrowDown||keys.ArrowLeft||keys.ArrowRight)) {
+            const moveSpeed=0.05;
+            if(keys.ArrowUp) selectedWall.position.y+=moveSpeed;
+            if(keys.ArrowDown) selectedWall.position.y-=moveSpeed;
+            if(keys.ArrowLeft||keys.ArrowRight) {
+                const lateral=new THREE.Vector3().crossVectors(camera.up, dir).normalize();
+                selectedWall.position.addScaledVector(lateral, keys.ArrowLeft?moveSpeed:-moveSpeed);
+            }
+            saveScene();
+        }
+    }
     renderer.render(scene, camera);
 }
+
+loadScene();
 animate();
 
-window.addEventListener("resize", () => {
-    camera.aspect = window.innerWidth / window.innerHeight;
+window.addEventListener("resize", ()=>{
+    camera.aspect=window.innerWidth/window.innerHeight;
     camera.updateProjectionMatrix();
     renderer.setSize(window.innerWidth, window.innerHeight);
 });
