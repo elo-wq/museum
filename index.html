@@ -2,198 +2,196 @@
 <html lang="fr">
 <head>
     <meta charset="UTF-8">
-    <title>Galerie 3D Multi-Utilisateurs</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Galerie 3D Permanente</title>
     <style>
-        body { margin:0; overflow:hidden; background:#eeeeee; font-family:sans-serif; }
+        body { margin:0; overflow:hidden; background:#111; font-family:sans-serif; touch-action: none; }
         #ui { 
-            position:absolute; top:20px; left:20px; 
-            background:rgba(255,255,255,0.95); padding:15px; 
-            border-radius:10px; z-index: 10;
-            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
-        }
-        #crosshair { 
-            position:absolute; top:50%; left:50%; 
-            transform:translate(-50%,-50%); width:10px; height:10px; 
-            border:2px solid white; border-radius:50%; 
-            pointer-events:none; mix-blend-mode:difference;
+            position:absolute; top:10px; left:10px; right:10px;
+            background:rgba(255,255,255,0.9); padding:12px; 
+            border-radius:10px; z-index: 10; font-size: 14px;
         }
         #status { font-size: 11px; color: #d63031; margin-top: 5px; font-weight: bold; }
-        p { font-size: 12px; margin: 10px 0 0 0; color: #333; }
+        #joystick-container {
+            position: absolute; bottom: 40px; left: 40px;
+            width: 80px; height: 80px; background: rgba(255,255,255,0.2);
+            border-radius: 50%; z-index: 20; display: none;
+        }
+        #joystick-stick {
+            position: absolute; top: 20px; left: 20px;
+            width: 40px; height: 40px; background: rgba(255,255,255,0.5);
+            border-radius: 50%;
+        }
     </style>
 </head>
 <body>
 
 <div id="ui">
     <input type="file" id="upload" multiple accept="image/*">
-    <div id="count" style="margin-top:10px;">0 images dans la galerie</div>
-    <div id="status">🔴 Déconnecté (Vérifie ta clé API)</div>
-    <p><strong>Z Q S D</strong> : Marcher | <strong>Clic</strong> : Activer souris</p>
+    <div id="count">Chargement des images partagées...</div>
+    <div id="status">🔴 Connexion au cloud...</div>
 </div>
 
-<div id="crosshair"></div>
+<div id="joystick-container"><div id="joystick-stick"></div></div>
 
 <script src="https://cdn.ably.com/lib/ably.min-1.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.158.0/build/three.min.js"></script>
 
 <script>
-// --- CONFIGURATION ABLY (AIRDROP) ---
-// Mets ta clé ici entre les guillemets
+// --- CONFIG ABLY ---
 const ABLY_KEY = 'p6Jeog.4vLjOw:GpkK-K-GrS4HVCsPL0Pfk2hfVwwvHMEpF9Sddrt1v_4'; 
-
-let channel;
 const ably = new Ably.Realtime({ key: ABLY_KEY });
-
-ably.connection.on('connected', () => {
-    document.getElementById('status').innerText = "✅ Connecté au réseau partagé";
-    document.getElementById('status').style.color = "#27ae60";
-});
-
-channel = ably.channels.get('galerie-live');
+const channel = ably.channels.get('galerie-live');
 
 // --- SETUP THREE.JS ---
 let scene = new THREE.Scene();
-scene.background = new THREE.Color(0xf0f0f0);
-
+scene.background = new THREE.Color(0x111111); // Fond sombre pour faire ressortir les photos
 let camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
-camera.position.set(0, 2, 12);
+camera.position.set(0, 2, 10);
 
 let renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
 document.body.appendChild(renderer.domElement);
 
-scene.add(new THREE.AmbientLight(0xffffff, 0.8));
-let light = new THREE.DirectionalLight(0xffffff, 0.5);
-light.position.set(5, 10, 7);
-scene.add(light);
+scene.add(new THREE.AmbientLight(0xffffff, 1));
+let grid = new THREE.GridHelper(200, 50, 0x444444, 0x222222);
+scene.add(grid);
 
-scene.add(new THREE.GridHelper(200, 100, 0xcccccc, 0xdddddd));
-
-// --- VARIABLES ---
 let imagesTextures = [];
 let sphereGroup = null;
-let isLocked = false;
-let keys = { z: false, q: false, s: false, d: false };
-let pitch = 0;
 
-// --- GESTION DES IMAGES ---
+// --- CONNEXION ET HISTORIQUE ---
+ably.connection.on('connected', () => {
+    document.getElementById('status').innerText = "✅ Cloud Synchrone Actif";
+    document.getElementById('status').style.color = "#27ae60";
 
-// 1. RECEVOIR les images des autres
-channel.subscribe('new-image', (message) => {
-    ajouterImageAScene(message.data);
+    // RÉCUPÉRER LES IMAGES DÉJÀ ENVOYÉES PAR LES AUTRES
+    channel.history((err, resultPage) => {
+        if (!err) {
+            // resultPage.items contient les derniers messages envoyés sur ce canal
+            let messages = resultPage.items.reverse(); 
+            messages.forEach(msg => ajouterImage(msg.data));
+            if(messages.length === 0) document.getElementById("count").innerText = "La galerie est vide. Soyez le premier !";
+        }
+    });
 });
 
-// 2. ENVOYER tes propres images
+// Écouter les futures images
+channel.subscribe('new-image', msg => ajouterImage(msg.data));
+
+// --- LOGIQUE MOBILE / PC ---
+let moveForward = 0, moveSide = 0;
+let yaw = 0, pitch = 0;
+let isMobile = ('ontouchstart' in window);
+if(isMobile) document.getElementById('joystick-container').style.display = 'block';
+
+// Fonction ajout d'image
+function ajouterImage(src) {
+    new THREE.TextureLoader().load(src, tex => {
+        tex.colorSpace = THREE.SRGBColorSpace;
+        imagesTextures.push(tex);
+        document.getElementById("count").innerText = imagesTextures.length + " images partagées";
+        createSphere();
+    });
+}
+
+// Upload
 document.getElementById("upload").onchange = (e) => {
     Array.from(e.target.files).forEach(file => {
-        if (!file.type.startsWith("image/")) return;
-
         let reader = new FileReader();
         reader.onload = (ev) => {
-            const imageData = ev.target.result;
-            // On l'ajoute pour nous immédiatement
-            ajouterImageAScene(imageData);
-            // On l'envoie aux autres via Ably
-            channel.publish('new-image', imageData);
+            // Note: On n'ajoute pas localement ici car subscribe('new-image') 
+            // nous renverra notre propre message, évitant les doublons.
+            channel.publish('new-image', ev.target.result);
         };
         reader.readAsDataURL(file);
     });
 };
 
-function ajouterImageAScene(source) {
-    new THREE.TextureLoader().load(source, (tex) => {
-        tex.colorSpace = THREE.SRGBColorSpace;
-        imagesTextures.push(tex);
-        document.getElementById("count").innerText = imagesTextures.length + " images";
-        createSphere(); // On reconstruit la sphère
-    });
-}
-
-// --- CRÉATION DE LA SPHÈRE ---
 function createSphere() {
-    if (imagesTextures.length === 0) return;
-
     if (sphereGroup) scene.remove(sphereGroup);
     sphereGroup = new THREE.Group();
     sphereGroup.position.set(0, 4, 0);
     scene.add(sphereGroup);
 
-    const radius = 5;
-    const count = imagesTextures.length;
-
+    const radius = 6, count = imagesTextures.length;
     imagesTextures.forEach((tex, i) => {
-        // Distribution mathématique (Spirale de Fibonacci)
         const phi = Math.acos(-1 + (2 * i) / count);
         const theta = Math.sqrt(count * Math.PI) * phi;
-
         const x = radius * Math.sin(phi) * Math.cos(theta);
         const y = radius * Math.sin(phi) * Math.sin(theta);
         const z = radius * Math.cos(phi);
-
-        const ratio = tex.image.width / tex.image.height;
+        
         const plane = new THREE.Mesh(
-            new THREE.PlaneGeometry(1.2 * ratio, 1.2),
+            new THREE.PlaneGeometry(1.5 * (tex.image.width/tex.image.height), 1.5),
             new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide })
         );
-
         plane.position.set(x, y, z);
         plane.lookAt(0, 4, 0); 
         sphereGroup.add(plane);
     });
 }
 
-// --- CONTROLES & ANIMATION ---
-document.addEventListener("click", () => {
-    if (!isLocked) document.body.requestPointerLock();
+// --- CONTRÔLES TACTILES ---
+let touchX = 0, touchY = 0;
+document.addEventListener('touchstart', e => {
+    touchX = e.touches[0].pageX;
+    touchY = e.touches[0].pageY;
+}, {passive: false});
+
+document.addEventListener('touchmove', e => {
+    let t = e.touches[0];
+    if(t.pageX > window.innerWidth / 2) {
+        yaw -= (t.pageX - touchX) * 0.005;
+        pitch -= (t.pageY - touchY) * 0.005;
+        pitch = Math.max(-0.8, Math.min(0.8, pitch));
+        camera.rotation.set(pitch, yaw, 0, 'YXZ');
+        touchX = t.pageX; touchY = t.pageY;
+    } else {
+        let container = document.getElementById('joystick-container').getBoundingClientRect();
+        let dx = t.pageX - (container.left + 40);
+        let dy = t.pageY - (container.top + 40);
+        let dist = Math.min(Math.sqrt(dx*dx + dy*dy), 40);
+        let angle = Math.atan2(dy, dx);
+        document.getElementById('joystick-stick').style.transform = `translate(${Math.cos(angle)*dist}px, ${Math.sin(angle)*dist}px)`;
+        moveForward = -Math.sin(angle) * (dist/40);
+        moveSide = -Math.cos(angle) * (dist/40);
+    }
+}, {passive: false});
+
+document.addEventListener('touchend', () => {
+    moveForward = 0; moveSide = 0;
+    document.getElementById('joystick-stick').style.transform = `translate(0px, 0px)`;
 });
 
-document.addEventListener("pointerlockchange", () => {
-    isLocked = document.pointerLockElement === document.body;
-});
-
+// PC Mouse
+document.addEventListener("click", () => { if(!isMobile) document.body.requestPointerLock(); });
 document.addEventListener("mousemove", (e) => {
-    if (!isLocked) return;
-    camera.rotation.y -= e.movementX * 0.002;
-    pitch -= e.movementY * 0.002;
-    pitch = Math.max(-0.6, Math.min(0.6, pitch));
-    camera.rotation.x = pitch;
-});
-
-document.addEventListener("keydown", e => { 
-    let k = e.key.toLowerCase();
-    if(keys.hasOwnProperty(k)) keys[k] = true; 
-});
-document.addEventListener("keyup", e => { 
-    let k = e.key.toLowerCase();
-    if(keys.hasOwnProperty(k)) keys[k] = false; 
+    if (document.pointerLockElement === document.body) {
+        yaw -= e.movementX * 0.002; pitch -= e.movementY * 0.002;
+        camera.rotation.set(Math.max(-0.8, Math.min(0.8, pitch)), yaw, 0, 'YXZ');
+    }
 });
 
 function animate() {
     requestAnimationFrame(animate);
-
-    if (sphereGroup) sphereGroup.rotation.y += 0.002;
-
-    if (isLocked) {
-        let speed = 0.15;
-        let dir = new THREE.Vector3();
-        camera.getWorldDirection(dir);
-        dir.y = 0; dir.normalize();
-        let side = new THREE.Vector3().crossVectors(camera.up, dir).normalize();
-
-        if (keys.z) camera.position.addScaledVector(dir, speed);
-        if (keys.s) camera.position.addScaledVector(dir, -speed);
-        if (keys.q) camera.position.addScaledVector(side, speed);
-        if (keys.d) camera.position.addScaledVector(side, -speed);
-    }
+    if (sphereGroup) sphereGroup.rotation.y += 0.001;
+    let speed = 0.15;
+    let dir = new THREE.Vector3();
+    camera.getWorldDirection(dir);
+    dir.y = 0; dir.normalize();
+    let side = new THREE.Vector3().crossVectors(camera.up, dir).normalize();
+    if (moveForward !== 0) camera.position.addScaledVector(dir, moveForward * speed);
+    if (moveSide !== 0) camera.position.addScaledVector(side, moveSide * speed);
     renderer.render(scene, camera);
 }
+animate();
 
 window.addEventListener("resize", () => {
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
     renderer.setSize(window.innerWidth, window.innerHeight);
 });
-
-animate();
 </script>
 </body>
 </html>
